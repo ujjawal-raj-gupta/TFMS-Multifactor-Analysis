@@ -3,8 +3,9 @@ numpy
 scikit-learn
 matplotlib
 seaborn
-streamlit
 textblob
 newsapi-python
 yfinance
 python-dotenv
+flask
+shap

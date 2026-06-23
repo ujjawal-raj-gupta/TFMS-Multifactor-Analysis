@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ project_title }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&family=Orbitron:wght@500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+</head>
+<body>
+  <div id="bg-canvas-wrap" aria-hidden="true"><canvas id="bg-canvas"></canvas></div>
+
+  <div class="app-shell app-shell--home" id="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <span class="brand-icon">◈</span>
+        <div>
+          <h1>TFMS</h1>
+          <p>Multifactor Analysis</p>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav hidden" id="stock-nav">
+        <button class="nav-item" data-stock-tab="overview">Overview</button>
+        <button class="nav-item" data-stock-tab="chart">Price Chart</button>
+        <button class="nav-item" data-stock-tab="explain">Explainable AI</button>
+        <button class="nav-item" data-stock-tab="news">News &amp; Sentiment</button>
+        <button class="nav-item ghost-nav" id="back-home">← Back to Search</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <button id="refresh-btn" class="ghost-btn">Refresh Data</button>
+        <p id="generated-at" class="muted"></p>
+      </div>
+    </aside>
+
+    <main class="content">
+      <!-- Landing / Home -->
+      <section id="view-home" class="view active">
+        <div class="landing">
+          <div class="landing-aurora" aria-hidden="true">
+            <span class="aurora-blob aurora-blob--1"></span>
+            <span class="aurora-blob aurora-blob--2"></span>
+            <span class="aurora-blob aurora-blob--3"></span>
+            <span class="aurora-blob aurora-blob--4"></span>
+          </div>
+          <div class="hero-glow-ring" aria-hidden="true"></div>
+
+          <h1 class="hero-title">
+            <span class="hero-brand">{{ project_hero_name }}</span>
+            <span class="hero-title-line">{{ project_hero_subtitle }}</span>
+          </h1>
+
+          <div class="search-wrap">
+            <div class="search-border-glow" aria-hidden="true"></div>
+            <label class="search-field" for="stock-search">
+              <svg class="search-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.75"/>
+                <path d="M20 20L16.5 16.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+              </svg>
+              <input
+                id="stock-search"
+                type="search"
+                placeholder="Search ticker or company name..."
+                autocomplete="off"
+              />
+            </label>
+            <div id="search-suggestions" class="search-suggestions hidden"></div>
+          </div>
+
+          <div class="hero-tickers" aria-hidden="true">
+            <span>AAPL</span><span>AMZN</span><span>GOOG</span><span>MSFT</span><span>TSLA</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Stock detail -->
+      <section id="view-stock" class="view">
+        <header class="stock-header">
+          <div>
+            <h2 id="stock-title">—</h2>
+            <p id="stock-subtitle" class="muted">—</p>
+          </div>
+          <div id="stock-price-badge" class="price-badge"></div>
+        </header>
+
+        <div id="tab-overview" class="stock-tab active">
+          <div class="metrics-row" id="overview-metrics"></div>
+          <div class="glass-panel">
+            <h3>Quick Summary</h3>
+            <p id="overview-summary" class="narrative"></p>
+          </div>
+        </div>
+
+        <div id="tab-chart" class="stock-tab">
+          <p class="tab-desc">90-day next-day forecast vs actual close (out-of-sample).</p>
+          <div class="glass-panel chart-panel"><div id="main-chart"></div></div>
+          <div class="metrics-row" id="chart-metrics"></div>
+        </div>
+
+        <div id="tab-explain" class="stock-tab">
+          <div class="glass-panel explain-panel">
+            <h3>Explainable AI — Factor Breakdown</h3>
+            <p id="explain-method" class="muted method-note"></p>
+            <div id="explain-bars"></div>
+            <p id="explain-narrative" class="narrative"></p>
+            <div id="fundamentals-grid" class="feature-grid"></div>
+            <div id="explain-features" class="feature-grid"></div>
+          </div>
+        </div>
+
+        <div id="tab-news" class="stock-tab">
+          <div class="glass-panel insights-panel">
+            <h3>Why did the price move?</h3>
+            <p id="news-insights-summary" class="narrative"></p>
+            <ul id="news-insights-list" class="insights-list"></ul>
+          </div>
+          <div id="news-container"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="loading-overlay" class="loading-overlay" aria-hidden="true" role="status" aria-live="polite">
+    <div class="loading-backdrop"></div>
+    <div class="loading-card">
+      <div class="loading-orb" aria-hidden="true">
+        <span class="loading-ring loading-ring--outer"></span>
+        <span class="loading-ring loading-ring--inner"></span>
+        <span class="loading-core">◈</span>
+      </div>
+      <p class="loading-brand">TFMS</p>
+      <h2 id="loading-title" class="loading-title">Loading analysis</h2>
+      <p id="loading-text" class="loading-subtitle">Preparing your dashboard...</p>
+      <ul class="loading-steps" id="loading-steps">
+        <li class="loading-step" data-step="0"><span class="step-indicator"></span>Market data</li>
+        <li class="loading-step" data-step="1"><span class="step-indicator"></span>Multifactor features</li>
+        <li class="loading-step" data-step="2"><span class="step-indicator"></span>Prediction model</li>
+        <li class="loading-step" data-step="3"><span class="step-indicator"></span>Explainable AI</li>
+        <li class="loading-step" data-step="4"><span class="step-indicator"></span>News &amp; sentiment</li>
+      </ul>
+      <div class="loading-bar" aria-hidden="true">
+        <div class="loading-bar-fill" id="loading-bar-fill"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.TFMS_TICKERS = {{ tickers | tojson }};
+  </script>
+  <script src="{{ url_for('static', filename='js/three-bg.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/news.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/explain.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

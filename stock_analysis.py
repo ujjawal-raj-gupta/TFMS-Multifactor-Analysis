@@ -13,18 +13,22 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 
+from explainability import (
+    FUNDAMENTAL_FEATURES,
+    SENTIMENT_FEATURES,
+    TECHNICAL_FEATURES,
+)
+from constants import COMPANY_NAMES, TICKERS
+from fundamentals import fetch_fundamental_metrics
+from news_service import fetch_sentiment_features
+
 
 DATA_DIR = Path(__file__).resolve().parent
-TICKERS = ("AAPL", "AMZN", "GOOG", "MSFT", "TSLA")
-COMPANY_NAMES = {
-    "AAPL": "Apple",
-    "AMZN": "Amazon",
-    "GOOG": "Alphabet",
-    "MSFT": "Microsoft",
-    "TSLA": "Tesla",
-}
 CSV_COLUMNS = ["Date", "Open", "High", "Low", "Close", "Adj Close", "Volume"]
 DEFAULT_START_DATE = "2020-01-02"
+CHART_DAYS = 90
+
+FEATURE_COLUMNS = list(TECHNICAL_FEATURES) + list(FUNDAMENTAL_FEATURES) + list(SENTIMENT_FEATURES)
 
 
 @dataclass(frozen=True)
@@ -142,38 +146,48 @@ def load_stock_data(ticker: str) -> pd.DataFrame:
     return df
 
 
-def add_features(df: pd.DataFrame) -> pd.DataFrame:
+def add_features(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     featured = df.copy()
-    featured["DateOrdinal"] = featured["Date"].map(pd.Timestamp.toordinal)
     featured["Daily_Return"] = featured["Adj Close"].pct_change()
     featured["MA_5"] = featured["Adj Close"].rolling(window=5).mean()
     featured["MA_20"] = featured["Adj Close"].rolling(window=20).mean()
     featured["Volume_Change"] = featured["Volume"].pct_change()
+
+    ma20 = featured["MA_20"].replace(0, np.nan)
+    featured["Close_to_MA20"] = featured["Close"] / ma20
+    featured["Open_to_MA20"] = featured["Open"] / ma20
+    featured["High_to_MA20"] = featured["High"] / ma20
+    featured["Low_to_MA20"] = featured["Low"] / ma20
+    featured["MA5_to_MA20"] = featured["MA_5"] / ma20
+
+    fundamentals = fetch_fundamental_metrics(ticker)
+    for key, value in fundamentals.items():
+        featured[key] = value
+
+    sentiment = fetch_sentiment_features(ticker)
+    featured["Sentiment_Score"] = sentiment["Sentiment_Score"]
+    featured["Sentiment_Positive_Ratio"] = sentiment["Sentiment_Positive_Ratio"]
+
+    featured["Next_Close"] = featured["Adj Close"].shift(-1)
+    featured["Next_Date"] = featured["Date"].shift(-1)
     return featured
 
 
-def train_random_forest(ticker: str) -> tuple[StockResult, pd.DataFrame, Pipeline]:
-    df = add_features(load_stock_data(ticker))
-    feature_columns = [
-        "DateOrdinal",
-        "Open",
-        "High",
-        "Low",
-        "Close",
-        "Volume",
-        "Daily_Return",
-        "MA_5",
-        "MA_20",
-        "Volume_Change",
-    ]
+def _prepare_model_frame(df: pd.DataFrame) -> pd.DataFrame:
+    working = df.iloc[:-1].copy()
+    base_close = df.loc[working.index, "Adj Close"].to_numpy(dtype=float)
+    working["Base_Close"] = base_close
+    working["Next_Return"] = working["Next_Close"].to_numpy(dtype=float) / base_close - 1.0
+    working = working.dropna(subset=FEATURE_COLUMNS + ["Next_Close", "Next_Date", "Next_Return"])
+    return working.reset_index(drop=True)
 
-    X = df[feature_columns]
-    y = df["Adj Close"]
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, shuffle=False
-    )
 
-    model = Pipeline(
+def _returns_to_prices(base_close: np.ndarray, pred_returns: np.ndarray) -> np.ndarray:
+    return base_close * (1.0 + pred_returns)
+
+
+def _build_model() -> Pipeline:
+    return Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="median")),
             (
@@ -187,30 +201,82 @@ def train_random_forest(ticker: str) -> tuple[StockResult, pd.DataFrame, Pipelin
             ),
         ]
     )
+
+
+def train_random_forest(
+    ticker: str,
+) -> tuple[StockResult, pd.DataFrame, Pipeline, pd.DataFrame]:
+    ticker = ticker.upper()
+    raw = add_features(load_stock_data(ticker), ticker)
+    model_df = _prepare_model_frame(raw)
+
+    X = model_df[FEATURE_COLUMNS]
+    y_return = model_df["Next_Return"]
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y_return, test_size=0.2, shuffle=False
+    )
+
+    model = _build_model()
     model.fit(X_train, y_train)
 
-    predictions = model.predict(X_test)
+    pred_returns = model.predict(X_test)
+    test_base = model_df.loc[y_test.index, "Base_Close"].to_numpy(dtype=float)
+    pred_prices = _returns_to_prices(test_base, pred_returns)
+    actual_prices = model_df.loc[y_test.index, "Next_Close"].to_numpy(dtype=float)
+
     latest_features = X.iloc[[-1]]
-    next_close = float(model.predict(latest_features)[0])
-    latest_close = float(y.iloc[-1])
+    latest_base = float(model_df["Base_Close"].iloc[-1])
+    latest_return = float(model.predict(latest_features)[0])
+    next_close = float(latest_base * (1.0 + latest_return))
+    latest_close = float(raw["Adj Close"].iloc[-1])
 
     evaluation = pd.DataFrame(
         {
-            "Date": df.loc[X_test.index, "Date"],
-            "Actual": y_test.to_numpy(),
-            "Predicted": predictions,
+            "Date": model_df.loc[y_test.index, "Next_Date"].to_numpy(),
+            "Actual": actual_prices,
+            "Predicted": pred_prices,
         }
     )
 
     result = StockResult(
-        ticker=ticker.upper(),
+        ticker=ticker,
         latest_close=latest_close,
         predicted_next_close=next_close,
-        mse=float(mean_squared_error(y_test, predictions)),
-        mae=float(mean_absolute_error(y_test, predictions)),
-        r2=float(r2_score(y_test, predictions)),
+        mse=float(mean_squared_error(actual_prices, pred_prices)),
+        mae=float(mean_absolute_error(actual_prices, pred_prices)),
+        r2=float(r2_score(actual_prices, pred_prices)),
     )
-    return result, evaluation, model
+    return result, evaluation, model, model_df
+
+
+def get_90day_actual_vs_predicted(
+    ticker: str,
+    model: Pipeline | None = None,
+    model_df: pd.DataFrame | None = None,
+) -> dict:
+    ticker = ticker.upper()
+    if model_df is None:
+        _, _, model, model_df = train_random_forest(ticker)
+
+    split = max(len(model_df) - CHART_DAYS, int(len(model_df) * 0.6))
+    chart_model = _build_model()
+    chart_model.fit(
+        model_df.iloc[:split][FEATURE_COLUMNS],
+        model_df.iloc[:split]["Next_Return"],
+    )
+
+    window = model_df.iloc[split:].tail(CHART_DAYS)
+    pred_returns = chart_model.predict(window[FEATURE_COLUMNS])
+    base_close = window["Base_Close"].to_numpy(dtype=float)
+    predicted = _returns_to_prices(base_close, pred_returns)
+    actual = window["Next_Close"].to_numpy(dtype=float)
+
+    return {
+        "ticker": ticker,
+        "dates": [pd.Timestamp(d).strftime("%Y-%m-%d") for d in window["Next_Date"]],
+        "actual": [round(float(v), 2) for v in actual],
+        "predicted": [round(float(v), 2) for v in predicted],
+    }
 
 
 def run_all_random_forests() -> pd.DataFrame:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -9,7 +9,7 @@ from newsapi import NewsApiClient
 from textblob import TextBlob
 import yfinance as yf
 
-from stock_analysis import TICKERS
+from constants import TICKERS
 
 load_dotenv()
 
@@ -29,15 +29,20 @@ class NewsArticle:
     published_at: str
     url: str
     sentiment: str
+    polarity: float
 
 
-def _analyze_sentiment(text: str) -> str:
-    polarity = TextBlob(text).sentiment.polarity
+def _sentiment_label(polarity: float) -> str:
     if polarity > 0:
         return "positive"
     if polarity < 0:
         return "negative"
     return "neutral"
+
+
+def _analyze_sentiment(text: str) -> tuple[str, float]:
+    polarity = float(TextBlob(text).sentiment.polarity)
+    return _sentiment_label(polarity), polarity
 
 
 def _format_published_at(value: str | None) -> str:
@@ -79,17 +84,23 @@ def _fetch_newsapi_articles(ticker: str, page_size: int) -> list[NewsArticle]:
         page_size=page_size,
     )
     articles = response.get("articles", [])
-    return [
-        NewsArticle(
-            title=article.get("title") or "Untitled",
-            source=(article.get("source") or {}).get("name") or "Unknown",
-            published_at=_format_published_at(article.get("publishedAt")),
-            url=article.get("url") or "",
-            sentiment=_analyze_sentiment(article.get("title") or ""),
+    results: list[NewsArticle] = []
+    for article in articles:
+        title = article.get("title") or ""
+        if not title:
+            continue
+        sentiment, polarity = _analyze_sentiment(title)
+        results.append(
+            NewsArticle(
+                title=title,
+                source=(article.get("source") or {}).get("name") or "Unknown",
+                published_at=_format_published_at(article.get("publishedAt")),
+                url=article.get("url") or "",
+                sentiment=sentiment,
+                polarity=round(polarity, 4),
+            )
         )
-        for article in articles
-        if article.get("title")
-    ]
+    return results
 
 
 def _fetch_yfinance_articles(ticker: str, page_size: int) -> list[NewsArticle]:
@@ -118,6 +129,7 @@ def _fetch_yfinance_articles(ticker: str, page_size: int) -> list[NewsArticle]:
             or article.get("displayTime")
             or article.get("providerPublishTime")
         )
+        sentiment, polarity = _analyze_sentiment(summary)
 
         results.append(
             NewsArticle(
@@ -125,7 +137,8 @@ def _fetch_yfinance_articles(ticker: str, page_size: int) -> list[NewsArticle]:
                 source=source,
                 published_at=_format_timestamp(published),
                 url=url,
-                sentiment=_analyze_sentiment(summary),
+                sentiment=sentiment,
+                polarity=round(polarity, 4),
             )
         )
     return results
@@ -144,4 +157,29 @@ def fetch_company_news(ticker: str, page_size: int = 8) -> list[NewsArticle]:
     if articles:
         return articles
 
-    raise RuntimeError(f"No news articles found for {ticker}.")
+    return []
+
+
+def fetch_sentiment_features(ticker: str) -> dict[str, float]:
+    articles = fetch_company_news(ticker, page_size=8)
+    if not articles:
+        return {"Sentiment_Score": 0.0, "Sentiment_Positive_Ratio": 0.0}
+
+    polarities = [article.polarity for article in articles]
+    positive_count = sum(1 for article in articles if article.sentiment == "positive")
+    return {
+        "Sentiment_Score": round(float(sum(polarities) / len(polarities)), 4),
+        "Sentiment_Positive_Ratio": round(positive_count / len(articles), 4),
+    }
+
+
+def fetch_all_news(page_size: int = 6) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = {}
+    for ticker in TICKERS:
+        articles = fetch_company_news(ticker, page_size=page_size)
+        grouped[ticker] = [asdict(article) for article in articles]
+    return grouped
+
+
+def article_to_dict(article: NewsArticle) -> dict:
+    return asdict(article)
